@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>DX/生成AIシフト ダッシュボード</title>
+  <script src="https://www.gstatic.com/charts/loader.js"></script>
+  <style>
+    :root { --bg:#0f1115; --panel:#151923; --muted:#8da2b5; --text:#e8eef5; --accent:#6ee7ff; }
+    html,body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,"Hiragino Kaku Gothic ProN","游ゴシック体",Meiryo,sans-serif;}
+    header{padding:18px 20px;border-bottom:1px solid #21283a;background:linear-gradient(180deg,#101521,#0f1115);}
+    header h1{margin:0;font-size:18px;letter-spacing:.4px}
+    header .sub{color:var(--muted);font-size:12px;margin-top:6px}
+    .wrap{max-width:1200px;margin:0 auto;padding:16px}
+    .controls{display:flex;gap:12px;flex-wrap:wrap;margin:8px 0 16px}
+    .controls input,.controls select, .controls button{
+      background:#0f1420;color:var(--text);border:1px solid #263248;border-radius:10px;padding:10px 12px;font-size:14px}
+    .controls button{cursor:pointer;background:#162033;border-color:#29405c}
+    .grid{display:grid;grid-template-columns:1.2fr 1fr;gap:16px}
+    .card{background:var(--panel);border:1px solid #222a3a;border-radius:14px;padding:14px}
+    .card h3{margin:2px 0 12px;font-size:14px;color:#cfe7ff}
+    .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
+    .kpi{background:#121827;border:1px solid #1e2433;border-radius:12px;padding:12px}
+    .kpi .label{color:var(--muted);font-size:12px}
+    .kpi .val{font-size:22px;margin-top:4px}
+    table{width:100%;border-collapse:collapse;font-size:13px}
+    th,td{padding:10px;border-bottom:1px solid #232c3e;vertical-align:top}
+    th{color:#c0d3ea;text-align:left;background:#111728;position:sticky;top:0}
+    .md{white-space:pre-wrap;line-height:1.55}
+    .pill{display:inline-block;border:1px solid #29405c;color:#9ed2ff;padding:2px 8px;border-radius:999px;font-size:12px;margin-right:4px;margin-bottom:6px}
+    footer{opacity:.6;text-align:center;padding:14px 0;font-size:12px}
+    @media (max-width: 980px){ .grid{grid-template-columns:1fr} .kpis{grid-template-columns:repeat(2,1fr)} }
+  </style>
+</head>
+<body>
+<header>
+  <h1>DX/生成AIシフト ダッシュボード</h1>
+  <div class="sub">Googleスプレッドシートをリアルタイム集計（シート: <code>summary</code>）</div>
+</header>
+
+<div class="wrap">
+
+  <div class="controls">
+    <input id="q" type="search" placeholder="キーワード検索（例: 提案書, RAG, Copilot...）" />
+    <select id="period">
+      <option value="all">全期間</option>
+      <option value="7">直近7日</option>
+      <option value="30">直近30日</option>
+      <option value="90">直近90日</option>
+    </select>
+    <button id="btnRefresh">更新</button>
+    <span id="status" class="pill">待機中</span>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="label">総件数</div><div id="k_total" class="val">-</div></div>
+    <div class="kpi"><div class="label">直近7日</div><div id="k_7" class="val">-</div></div>
+    <div class="kpi"><div class="label">メリット数</div><div id="k_merit" class="val">-</div></div>
+    <div class="kpi"><div class="label">懸念数</div><div id="k_concern" class="val">-</div></div>
+  </div>
+
+  <div class="grid">
+
+    <div class="card">
+      <h3>投稿一覧（最新50件）</h3>
+      <table id="tbl">
+        <thead><tr><th style="width:140px">日時</th><th>サマリー（Markdown）</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>可視化</h3>
+      <div id="chart_daily" style="height:220px"></div>
+      <div id="chart_keywords" style="height:260px;margin-top:10px"></div>
+      <div style="margin-top:8px">
+        <span class="pill" id="lastUpdated">更新: -</span>
+        <span class="pill">シート: summary</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<footer>© DX/生成AIシフト Dashboard</footer>
+
+<script>
+  // === 設定（あなたのシート） =========================================
+  const SHEET_ID = "1kFDpZLR25uSxyyWaohzBF1IYPM7s-pomEFpzMFVuDZ8"; // ←固定
+  const SHEET_NAME = "summary"; // ←固定
+  // ===================================================================
+
+  // Google Charts 読み込み
+  google.charts.load('current', {'packages':['corechart','bar']});
+
+  const state = { rows: [], filtered: [] };
+
+  // gviz でシートを取得（APIキー不要・リンク共有ViewerでOK）
+  async function fetchSheet(){
+    setStatus("読み込み中…");
+    const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(SHEET_NAME)}`;
+    const text = await fetch(url, {cache: "no-cache"}).then(r => r.text());
+    // レスポンスは "google.visualization.Query.setResponse({...});"
+    const json = JSON.parse(text.substring(text.indexOf('{'), text.lastIndexOf('}')+1));
+    const cols = json.table.cols.map(c => c.label || c.id);
+    const out = [];
+    (json.table.rows || []).forEach(r => {
+      const obj = {};
+      cols.forEach((c, i) => obj[c || `col${i}`] = r.c[i] ? r.c[i].v : null);
+      out.push(obj);
+    });
+    return out;
+  }
+
+  function parseDate(v){
+    // A列 timestamp: 文字列/Dateいずれも想定
+    const d = (v instanceof Date) ? v : new Date(v);
+    return isNaN(d) ? null : d;
+  }
+
+  // final_summary（Markdown）からセクションをざっくり抽出し、KPI用の数を数える
+  function analyzeRows(rows){
+    let merit = 0, concern = 0;
+    rows.forEach(r=>{
+      const md = (r.final_summary || "") + "";
+      // 「## メリット」「## デメリット・懸念」の箇条書きをカウント（先頭 "- "）
+      const secMerit = (md.split("## メリット")[1] || "").split("##")[0];
+      merit += (secMerit.match(/\n-\s+/g) || []).length;
+
+      const secConcern = (md.split("## デメリット")[1] || "").split("##")[0];
+      concern += (secConcern.match(/\n-\s+/g) || []).length;
+    });
+    return { merit, concern };
+  }
+
+  function filterRows(rows){
+    const q = document.getElementById('q').value.trim();
+    const period = document.getElementById('period').value;
+    const now = new Date();
+
+    return rows.filter(r=>{
+      const d = parseDate(r.timestamp);
+      if(!d) return false;
+
+      // 期間フィルタ
+      if(period !== "all"){
+        const days = parseInt(period,10);
+        const diff = (now - d) / 86400000;
+        if(diff > days) return false;
+      }
+      // キーワード
+      if(q){
+        const hay = `${r.final_summary || ""}`.toLowerCase();
+        if(!hay.includes(q.toLowerCase())) return false;
+      }
+      return true;
+    }).sort((a,b)=> new Date(b.timestamp) - new Date(a.timestamp));
+  }
+
+  function drawTable(rows){
+    const tb = document.querySelector('#tbl tbody');
+    tb.innerHTML = '';
+    rows.slice(0,50).forEach(r=>{
+      const tr = document.createElement('tr');
+      const td1 = document.createElement('td');
+      td1.textContent = r.timestamp || '';
+      const td2 = document.createElement('td');
+      td2.className = 'md';
+      td2.textContent = (r.final_summary || '').trim();
+      tr.appendChild(td1); tr.appendChild(td2);
+      tb.appendChild(tr);
+    });
+  }
+
+  function drawDailyChart(rows){
+    const byDay = new Map();
+    rows.forEach(r=>{
+      const d = parseDate(r.timestamp); if(!d) return;
+      const key = d.toISOString().slice(0,10);
+      byDay.set(key, (byDay.get(key)||0)+1);
+    });
+    const arr = [["日付","件数"]];
+    [...byDay.keys()].sort().forEach(k=> arr.push([k, byDay.get(k)]));
+
+    const data = google.visualization.arrayToDataTable(arr);
+    const opt = { legend:{position:'none'}, hAxis:{ textStyle:{color:'#bcd'}}, vAxis:{ textStyle:{color:'#bcd'}},
+      backgroundColor:'transparent', chartArea:{left:40,top:10,right:10,bottom:40}, colors:['#6ee7ff'] };
+    new google.visualization.ColumnChart(document.getElementById('chart_daily')).draw(data,opt);
+  }
+
+  // 簡易キーワード（日本語の雑なストップワード除去付き）
+  function drawKeywordChart(rows){
+    const txt = rows.map(r=> (r.final_summary||'')).join('\n').toLowerCase();
+    const stop = "の に へ と が は を で も から まで そして また ため による など こと もの よう これ それ あれ する され でき なる ある いる 及び および 及ぶ".split(/\s+/);
+    const tokens = txt
+      .replace(/[#*>\-_|`~$begin:math:display$$end:math:display$()*:。.、，．！!？?（）\r]/g,' ')
+      .replace(/[^\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Han}a-z0-9 ]/gu,' ')
+      .split(/\s+/).filter(w => w && !stop.includes(w) && w.length>=2);
+
+    const freq = new Map();
+    tokens.forEach(t=> freq.set(t, (freq.get(t)||0)+1));
+    const top = [...freq.entries()].sort((a,b)=>b[1]-a[1]).slice(0,15);
+    const arr = [["キーワード","頻度"], ...top];
+
+    const data = google.visualization.arrayToDataTable(arr);
+    const opt = { legend:{position:'none'}, backgroundColor:'transparent',
+      chartArea:{left:100,top:10,right:10,bottom:30},
+      hAxis:{ textStyle:{color:'#bcd'}}, vAxis:{ textStyle:{color:'#bcd'}}, colors:['#8bd5ff'] };
+    new google.visualization.BarChart(document.getElementById('chart_keywords')).draw(data,opt);
+  }
+
+  function setKPI(id,val){ document.getElementById(id).textContent = val; }
+  function setStatus(s){ document.getElementById('status').textContent = s; }
+
+  async function refresh(){
+    try{
+      setStatus("更新中…");
+      const raw = await fetchSheet();
+      // 期待カラム: timestamp, final_summary
+      state.rows = raw.map(r => ({ timestamp: r.timestamp, final_summary: r.final_summary }));
+      state.filtered = filterRows(state.rows);
+
+      // KPI
+      setKPI('k_total', state.rows.length);
+      setKPI('k_7', filterRows(state.rows.filter(r => (new Date() - new Date(r.timestamp)) / 86400000 <= 7)).length);
+      const k = analyzeRows(state.filtered);
+      setKPI('k_merit', k.merit);
+      setKPI('k_concern', k.concern);
+
+      // 表・グラフ
+      drawTable(state.filtered);
+      google.charts.setOnLoadCallback(()=>{
+        drawDailyChart(state.filtered);
+        drawKeywordChart(state.filtered);
+      });
+
+      document.getElementById('lastUpdated').textContent = "更新: " + new Date().toLocaleString();
+      setStatus("OK");
+    }catch(err){
+      console.error(err);
+      setStatus("エラー");
+      alert("読み込みに失敗しました。シートの共有設定（リンク閲覧可）とシート名 summary を確認してください。");
+    }
+  }
+
+  // フィルタ操作
+  document.getElementById('btnRefresh').addEventListener('click', refresh);
+  document.getElementById('q').addEventListener('input', ()=>{ state.filtered = filterRows(state.rows); drawTable(state.filtered); google.charts.setOnLoadCallback(()=>{ drawDailyChart(state.filtered); drawKeywordChart(state.filtered); }); });
+  document.getElementById('period').addEventListener('change', ()=>{ state.filtered = filterRows(state.rows); drawTable(state.filtered); google.charts.setOnLoadCallback(()=>{ drawDailyChart(state.filtered); drawKeywordChart(state.filtered); }); });
+
+  // 初回ロード
+  refresh();
+  // 60秒ごとに自動更新（不要ならコメントアウト）
+  setInterval(refresh, 60000);
+</script>
+</body>
+</html>
