@@ -1,280 +1,138 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ja">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>DX/生成AIシフト ダッシュボード</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<style>
-  :root {
-    --bg:#0b0f14; --panel:#121821; --panel2:#0f141b; --text:#e7eef7; --muted:#9fb0c6; --border:#203044;
-    --c1:#4f77ff; --c2:#35d0a7; --c3:#ffb020; --c4:#ff6a7a;
-  }
-  html,body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,Roboto,"Noto Sans JP",Arial}
-  .wrap{max-width:1200px;margin:28px auto;padding:0 16px}
-  .title{font-weight:700;font-size:clamp(18px,3vw,28px)}
-  .muted{color:var(--muted);font-size:13px}
-  .grid{display:grid;gap:14px}
-  .grid-4{grid-template-columns:repeat(4,minmax(0,1fr))}
-  .panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px}
-  .kpi{display:flex;flex-direction:column;gap:6px;min-height:76px}
-  .num{font-size:28px;font-weight:700}
-  .label{color:var(--muted);font-size:12px;letter-spacing:.02em}
-  .layout{display:grid;grid-template-columns:1.2fr 1fr;gap:14px}
-  .toolbar{display:flex;gap:10px;align-items:center;margin:12px 0}
-  input[type="search"]{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:10px 12px;outline:0;min-width:260px}
-  .btn{background:#1a2330;color:var(--text);border:1px solid var(--border);border-radius:10px;padding:10px 14px;cursor:pointer}
-  .btn:hover{filter:brightness(1.08)}
-  .list .row{border-bottom:1px solid var(--border);padding:12px 8px}
-  .date{color:var(--muted);font-size:12px}
-  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
-  .chip{border:1px solid var(--border);color:var(--muted);background:#1a2330;border-radius:999px;font-size:12px;padding:3px 8px}
-  .md{margin-top:6px}
-  @media (max-width: 900px){.layout{grid-template-columns:1fr}.grid-4{grid-template-columns:repeat(2,minmax(0,1fr))}}
-</style>
+  <meta charset="UTF-8">
+  <title>DX/生成AIシフト ダッシュボード</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    body { background: #111; color: #eee; font-family: sans-serif; }
+    h1 { text-align: center; margin: 20px 0; }
+    #chartContainer { width: 400px; margin: auto; }
+    #cards { 
+      display: grid; 
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); 
+      gap: 15px; 
+      margin: 20px; 
+    }
+    .card {
+      background: #1e1e1e; 
+      border-radius: 10px; 
+      padding: 15px; 
+      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    }
+    .timestamp { font-size: 0.8em; color: #aaa; margin-bottom: 10px; }
+    .markdown { line-height: 1.4; }
+    button {
+      display: block;
+      margin: 10px auto;
+      padding: 8px 16px;
+      border: none;
+      border-radius: 6px;
+      background: #2196f3;
+      color: #fff;
+      cursor: pointer;
+    }
+    button:hover { background: #1976d2; }
+  </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="title">DX/生成AIシフト ダッシュボード</div>
-  <div class="muted">スプレッドシートの <code>final_summary</code> をルール分類して可視化（AI不使用）</div>
-
-  <div class="toolbar">
-    <input id="q" type="search" placeholder="キーワード検索（例：提案書 / 自動化 / 顧客）">
-    <button id="refreshBtn" class="btn">更新</button>
-    <span class="muted" id="status"></span>
+  <h1>DX/生成AIシフト ダッシュボード</h1>
+  <div id="chartContainer">
+    <canvas id="categoryChart"></canvas>
   </div>
+  <button onclick="loadData()">🔄 更新</button>
+  <h2 style="text-align:center;">カテゴリ別アイデア一覧</h2>
+  <div id="cards"></div>
 
-  <div class="grid grid-4">
-    <div class="panel kpi"><div class="label">総アイデア数</div><div id="kpi-total" class="num">0</div></div>
-    <div class="panel kpi"><div class="label">直近7日</div><div id="kpi-week" class="num">0</div></div>
-    <div class="panel kpi"><div class="label">選択カテゴリ</div><div id="kpi-selected" class="num">全体</div></div>
-    <div class="panel kpi"><div class="label">最終更新</div><div id="kpi-updated" class="num">—</div></div>
-  </div>
+  <script>
+    const SHEET_URL = "https://docs.google.com/spreadsheets/d/1kFDpZLR25uSxyyWaohzBF1IYPM7s-pomEFpzMFVuDZ8/gviz/tq?tqx=out:csv&sheet=summary";
 
-  <div class="layout">
-    <div class="panel">
-      <div class="label" style="margin-bottom:8px">カテゴリ別（クリックで詳細表示）</div>
-      <canvas id="pie" height="160"></canvas>
-      <div class="muted" style="margin-top:8px">カテゴリ：①業務効率化 ②収益アップ ③エンゲージメント向上 ④環境・ESG</div>
-    </div>
-    <div class="panel">
-      <div class="label" style="margin-bottom:8px">カテゴリ詳細</div>
-      <div id="detail-list" class="list"></div>
-    </div>
-  </div>
+    let chart, categories = {};
 
-  <div class="panel" style="margin-top:14px">
-    <div class="label" style="margin-bottom:8px">全件（最新50件）</div>
-    <div id="all-list" class="list"></div>
-  </div>
-</div>
-
-<script>
-/** ==== 設定 ==== */
-const SHEET_ID = "1kFDpZLR25uSxyyWaohzBF1IYPM7s-pomEFpzMFVuDZ8";
-const SHEET_NAME = "summary";
-// gviz endpoint（公開閲覧でOK）
-const GVIZ_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(SHEET_NAME)}`;
-
-/** ==== カテゴリ辞書（必要に応じて追加・調整してください）==== */
-const CATEGORIES = [
-  { key: "効率化", label: "業務効率化(経費削減)", color: "#4f77ff",
-    keywords: [
-      "効率化","省力","時短","自動化","自動","RPA","テンプレ","定型","標準化","重複排除",
-      "コスト","経費","工数","削減","省人","省力化","自走化","バッチ","自律","最適化"
-    ]},
-  { key: "収益", label: "収益アップ(売上貢献)", color: "#35d0a7",
-    keywords: [
-      "売上","収益","受注","成約","新規獲得","リード","商談","LTV","客単価","ARPU","CVR",
-      "アップセル","クロスセル","案件創出","コンバージョン","利益","粗利","パイプライン"
-    ]},
-  { key: "エンゲージ", label: "エンゲージメント向上", color: "#ffb020",
-    keywords: [
-      "満足度","NPS","CS","関係性","ロイヤルティ","エンゲージ","オンボーディング","教育",
-      "ナレッジ共有","コミュニティ","離脱防止","継続率","リテンション","ファン化","口コミ","従業員体験","EX"
-    ]},
-  { key: "ESG", label: "環境・ESG", color: "#ff6a7a",
-    keywords: [
-      "環境","ESG","サステナ","サステナビリティ","CO2","排出","脱炭素","省エネ","再エネ",
-      "リサイクル","廃棄","紙削減","エコ","コンプライアンス","CSR"
-    ]},
-];
-// 同点のときの優先順位（左ほど優先）
-const PRIORITY = ["収益","効率化","エンゲージ","ESG"];
-
-/** ==== ユーティリティ ==== */
-function robustParseGviz(text){
-  const m = text.match(/setResponse\(([\s\S]*)\);/);
-  if(!m) throw new Error("GViz parse error");
-  return JSON.parse(m[1]);
-}
-function normalize(s){
-  if(!s) return "";
-  // ごく簡単な正規化（必要なら語彙追加を推奨）
-  return s.toLowerCase().replace(/[Ａ-Ｚａ-ｚ０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0)-0xFEE0));
-}
-function scoreCategory(text, cat){
-  let score = 0;
-  for(const kw of cat.keywords){
-    if(text.includes(kw)) score++;
-  }
-  return score;
-}
-function classify(text){
-  const n = normalize(text);
-  let best = { key:null, label:"未分類", color:"#999", score:0 };
-  const scores = [];
-  for(const cat of CATEGORIES){
-    const sc = scoreCategory(n, cat);
-    scores.push({key:cat.key, label:cat.label, color:cat.color, score:sc});
-  }
-  // 最大スコアを選択。同点は PRIORITY で決定
-  const max = Math.max(0, ...scores.map(s=>s.score));
-  if(max === 0) return best;
-  const ties = scores.filter(s=>s.score===max);
-  if(ties.length===1) return ties[0];
-  ties.sort((a,b)=> PRIORITY.indexOf(a.key) - PRIORITY.indexOf(b.key));
-  return ties[0];
-}
-function fmtDate(v){
-  const d = new Date(v); if(isNaN(d)) return v||"";
-  const y=d.getFullYear(), m=('0'+(d.getMonth()+1)).slice(-2), dd=('0'+d.getDate()).slice(-2);
-  const hh=('0'+d.getHours()).slice(-2), mm=('0'+d.getMinutes()).slice(-2);
-  return `${y}/${m}/${dd} ${hh}:${mm}`;
-}
-
-/** ==== 状態 ==== */
-let STATE = {
-  rows: [],           // {timestamp, final_summary, category{key,label,color,score}}
-  selectedKey: null,  // 円グラフで選択されたカテゴリ key
-  query: ""
-};
-
-/** ==== 描画 ==== */
-let pieChart=null;
-
-function renderKPIs(){
-  const total = STATE.rows.length;
-  const now = new Date(); const weekAgo = new Date(now - 7*24*60*60*1000);
-  const week = STATE.rows.filter(r => new Date(r.timestamp)>=weekAgo).length;
-  document.getElementById("kpi-total").textContent = total.toString();
-  document.getElementById("kpi-week").textContent = week.toString();
-  document.getElementById("kpi-selected").textContent = STATE.selectedKey
-    ? (CATEGORIES.find(c=>c.key===STATE.selectedKey)?.label || "—")
-    : "全体";
-  document.getElementById("kpi-updated").textContent = fmtDate(new Date());
-}
-
-function filteredRowsForList(all=false){
-  let rows = [...STATE.rows];
-  if(STATE.query){
-    const q = STATE.query.toLowerCase();
-    rows = rows.filter(r => (r.final_summary||"").toLowerCase().includes(q));
-  }
-  if(!all && STATE.selectedKey){
-    rows = rows.filter(r => r.category.key === STATE.selectedKey);
-  }
-  // 新しい順
-  rows.sort((a,b)=> new Date(b.timestamp)-new Date(a.timestamp));
-  return rows.slice(0, 50);
-}
-
-function renderList(targetId, all=false){
-  const el = document.getElementById(targetId);
-  el.innerHTML = "";
-  const rows = filteredRowsForList(all);
-  if(rows.length===0){
-    el.innerHTML = `<div class="muted">該当データがありません</div>`;
-    return;
-  }
-  for(const r of rows){
-    const div = document.createElement("div");
-    div.className = "row";
-    div.innerHTML = `
-      <div class="date">${fmtDate(r.timestamp)}</div>
-      <div class="chips">
-        <span class="chip">${r.category.label}</span>
-        <span class="chip">score: ${r.category.score}</span>
-      </div>
-      <div class="md">${marked.parse(r.final_summary || "")}</div>
-    `;
-    el.appendChild(div);
-  }
-}
-
-function renderPie(){
-  // 集計
-  const counts = CATEGORIES.map(c => ({
-    key: c.key, label: c.label, color: c.color,
-    count: STATE.rows.filter(r => r.category.key===c.key).length
-  }));
-  const data = {
-    labels: counts.map(c=>c.label),
-    datasets: [{ data: counts.map(c=>c.count), backgroundColor: counts.map(c=>c.color) }]
-  };
-  if(pieChart) pieChart.destroy();
-  const ctx = document.getElementById("pie");
-  pieChart = new Chart(ctx, {
-    type: "doughnut",
-    data,
-    options: {
-      plugins: {
-        legend: { labels: { color: "#cfe0f5" } },
-        tooltip: { callbacks: { label: (ctx)=> `${ctx.label}: ${ctx.parsed}件` } }
-      },
-      onClick: (_evt, els) => {
-        if(!els.length){ STATE.selectedKey=null; renderAll(); return; }
-        const idx = els[0].index;
-        STATE.selectedKey = counts[idx].key;
-        renderAll();
-      }
+    // ✅ カテゴリ分類ルール
+    function classify(summary) {
+      if (/効率|短縮|削減/.test(summary)) return "業務効率化";
+      if (/売上|収益|利益/.test(summary)) return "収益アップ";
+      if (/顧客|満足|エンゲージ/.test(summary)) return "エンゲージメント";
+      if (/環境|ESG|サステナ/.test(summary)) return "環境/ESG";
+      return "未分類";
     }
-  });
-}
 
-function renderAll(){
-  renderKPIs();
-  renderPie();
-  renderList("detail-list", false); // 選択カテゴリ
-  renderList("all-list", true);     // 全体
-}
+    // ✅ CSVをJSON化
+    function csvToJSON(csv) {
+      const lines = csv.split("\n").filter(l => l.trim() !== "");
+      const headers = lines[0].split(",");
+      return lines.slice(1).map(line => {
+        const cols = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/); // カンマ区切り (クォート対応)
+        let obj = {};
+        headers.forEach((h,i) => obj[h.trim()] = cols[i] ? cols[i].replace(/^"|"$/g,"") : "");
+        return obj;
+      });
+    }
 
-/** ==== データ取得 ==== */
-async function fetchRows(){
-  document.getElementById("status").textContent = "読み込み中…";
-  const res = await fetch(GVIZ_URL, { cache: "no-store" });
-  const text = await res.text();
-  const json = robustParseGviz(text);
-  const rows = (json.table.rows||[]).map(r => {
-    const ts = r.c?.[0]?.f || r.c?.[0]?.v || "";
-    const sum = r.c?.[1]?.v || "";
-    const cat = classify(sum);
-    return { timestamp: ts, final_summary: sum, category: cat };
-  });
-  STATE.rows = rows;
-  document.getElementById("status").textContent = `取得: ${rows.length}件`;
-}
+    // ✅ データ取得して更新
+    async function loadData() {
+      const res = await fetch(SHEET_URL);
+      const text = await res.text();
+      const rows = csvToJSON(text);
 
-/** ==== イベント ==== */
-document.getElementById("q").addEventListener("input", e => {
-  STATE.query = e.target.value.trim();
-  renderAll();
-});
-document.getElementById("refreshBtn").addEventListener("click", async ()=>{
-  await fetchRows(); renderAll();
-});
+      // reset
+      categories = {};
 
-/** ==== 初期化 ==== */
-(async ()=>{
-  try{
-    await fetchRows();
-    renderAll();
-  }catch(err){
-    document.getElementById("status").textContent = "読み込み失敗：" + err.message;
-    console.error(err);
-  }
-})();
-</script>
+      rows.forEach(row => {
+        const summary = row.final_summary || "";
+        const ts = row.timestamp || "";
+        const cat = classify(summary);
+        if (!categories[cat]) categories[cat] = [];
+        categories[cat].push({ timestamp: ts, final_summary: summary });
+      });
+
+      updateChart();
+    }
+
+    // ✅ グラフ更新
+    function updateChart() {
+      const ctx = document.getElementById('categoryChart').getContext('2d');
+      if (chart) chart.destroy();
+      chart = new Chart(ctx, {
+        type: 'pie',
+        data: {
+          labels: Object.keys(categories),
+          datasets: [{
+            data: Object.values(categories).map(arr => arr.length),
+            backgroundColor: ["#4caf50","#2196f3","#ff9800","#9c27b0","#607d8b"]
+          }]
+        },
+        options: {
+          onClick: (e, elements) => {
+            if (elements.length > 0) {
+              const idx = elements[0].index;
+              const category = chart.data.labels[idx];
+              renderCards(category);
+            }
+          }
+        }
+      });
+    }
+
+    // ✅ カード描画
+    function renderCards(category) {
+      const container = document.getElementById("cards");
+      container.innerHTML = "";
+      categories[category].forEach(item => {
+        const card = document.createElement("div");
+        card.className = "card";
+        card.innerHTML = `
+          <div class="timestamp">${item.timestamp}</div>
+          <div class="markdown">${marked.parse(item.final_summary)}</div>
+        `;
+        container.appendChild(card);
+      });
+    }
+
+    // 初期ロード
+    loadData();
+  </script>
 </body>
 </html>
